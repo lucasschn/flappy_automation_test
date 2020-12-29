@@ -194,20 +194,14 @@ def laserScanCallback(msg):
     elif upper_screen_limit_y: # update position based on velocity
         global upper_screen_limit_y
         upper_screen_limit_y -= velocity_y/30 # frequency is 30Hz
-        print "Y-velocity : {}".format(velocity_y)
         print "Upper screen limit at {}m".format(upper_screen_limit_y)
-    else:
-        print "Still first iteration ..."
         
     if setLowerScreenLimit(pointcloud_y, angles, msg.intensities):
         print "Lower screen limit detected at {}m".format(lower_screen_limit_y)
     elif lower_screen_limit_y: # update position based on velocity
         global lower_screen_limit_y 
         lower_screen_limit_y -= velocity_y/30
-        print "Y-velocity : {}".format(velocity_y)
         print "Lower screen limit at {}m".format(lower_screen_limit_y)
-    else:
-        print "Still first iteration ..."
         
     if getRocksPosition(pointcloud_x, msg.range_min, msg.range_max): # rock wall
         rocks_x = getRocksPosition(pointcloud_x, msg.range_min, msg.range_max)
