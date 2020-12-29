@@ -13,9 +13,10 @@ from geometry_msgs.msg import Vector3
 
 # constants
 EPSILON = 0.25
-SCAN_DISTANCE = 0.5
+SCAN_DISTANCE = 1
+MIN_DIST_TO_SCREEN_LIMITS = 0.5
 KP_pos = .5 # proportional gain acceleration/distance_to_hole
-KP_vel = .5 # proportional gain velocity/reference velocity
+KP_vel = 1 # proportional gain velocity/reference velocity
 
 # global variables
 state = 'approach'
@@ -143,17 +144,16 @@ def velCallback(msg):
 
     ### Position controller
     # reference is 0 distance to hole, so err_pos_y = y_distance_to_gate
-    if state is 'approach':
+    if state=='approach':
         ref_vel_x = 0.5
         ref_vel_y = 0.0
-    elif state is 'scan'
+    elif state=='scan-down':
         ref_vel_x = 0.0
-        if (not lower_screen_limit) or abs(lower_screen_limit_y) > 0.1: # change direction only when lower screen limit is detected and <= 0.1
-            res_vel_y = -0.1
-        else:
-            res_vel_y = 0.1
-
-    elif state is 'go through'
+        ref_vel_y = -0.1
+    elif state=='scan-up':
+        ref_vel_x = 0.0
+        ref_vel_y = 0.1
+    elif state=='go through': # then set a reference y-position
         ref_vel_x = 0.2
         ref_pos_y = y_distance_to_gate
         # output of the position controller is the velocity reference
@@ -166,15 +166,17 @@ def velCallback(msg):
     vel_y = msg.y
 
     # errors
-    err_vel_x = ref_vel_x - x_velocity
-    err_vel_y = ref_vel_y - y_velocity
+    err_vel_x = ref_vel_x - vel_x
+    err_vel_y = ref_vel_y - vel_y
 
-    y_acceleration = KP_vel*err_vel_y
+    acc_x = KP_vel*err_vel_x
+    acc_y = KP_vel*err_vel_y
 
-    print "Controller: pos. err. = {}, vel. err. = {}".format(y_distance_to_gate, err_vel_y)
-    print "y_acceleration = {}".format(y_acceleration)
+    print "Controller: pos. err. = y: {}".format(y_distance_to_gate)
+    print "Controller: vel. err. = x: {}, y: {}".format(err_vel_x, err_vel_y)
+    print "Controller: Accelaration = x: {}, y: {}".format(acc_x, acc_y)
     
-    pub_acc_cmd.publish(Vector3(0,y_acceleration,0))
+    pub_acc_cmd.publish(Vector3(acc_x,acc_y,0))
 
 def laserScanCallback(msg):
     """ laserScanCallback is the callback function executed when a message is received. It takes the message as an argument, so it can display and make use of information contained in it.
@@ -198,7 +200,7 @@ def laserScanCallback(msg):
 
     # msg has the format of sensor_msgs::LaserScan
     # print laser angle and range
-
+    print "State = {}".format(state)
     angles = msg.angle_min + np.multiply(np.arange(start=0,stop=9,dtype=int),msg.angle_increment)
     angles_deg = np.round(angles * 180/math.pi,2)
     
@@ -214,34 +216,35 @@ def laserScanCallback(msg):
         print "Upper screen limit detected at {}m".format(upper_screen_limit_y)
     elif upper_screen_limit_y: # update position based on velocity
         global upper_screen_limit_y
-        upper_screen_limit_y -= velocity_y/30 # frequency is 30Hz
+        upper_screen_limit_y -= vel_y/30 # frequency is 30Hz
         print "Upper screen limit at {}m".format(upper_screen_limit_y)
         
     if setLowerScreenLimit(pointcloud_y, angles, msg.intensities):
         print "Lower screen limit detected at {}m".format(lower_screen_limit_y)
     elif lower_screen_limit_y: # update position based on velocity
         global lower_screen_limit_y 
-        lower_screen_limit_y -= velocity_y/30
+        lower_screen_limit_y -= vel_y/30
         print "Lower screen limit at {}m".format(lower_screen_limit_y)
         
-    if getRocksPosition(pointcloud_x, msg.range_min, msg.range_max): # rock wall
+    if getRocksPosition(pointcloud_x, msg.range_min, msg.range_max): # rock wall detected
         rocks_x = getRocksPosition(pointcloud_x, msg.range_min, msg.range_max)
         print "Rock wall detected at {}m".format(round(rocks_x,2))
-        if rocks_x > SCAN_DISTANCE: # we only reevaluate gate position if not too close already
+        if rocks_x <= SCAN_DISTANCE:
             global state
             state = 'scan' # change state from approach to scan
-            if lower_screen_limit_y <= EPSILON and holes_probas not in locals():
+            if 'lower_screen_limit' in locals() and lower_screen_limit_y <= EPSILON and 'gate_probas' not in locals():
                 gate_probas = [0.1]*10 # probability of gate being in one tenth fraction of screen height (from low to high)
                 pos_y = - lower_screen_limit_y
             global y_distance_to_gate
-            if getGatePosition(pointcloud_x, angles, rocks_x) is not None:
+            if 'gate_probas' in locals() and (getGatePosition(pointcloud_x, angles, rocks_x) is not None):
                 y_distance_to_gate = getGatePosition(pointcloud_x, angles, rocks_x)
                 print "Gate detected at {}m above".format(y_distance_to_gate) 
                 gate_pos_y = y_distance_to_gate + pos_y
                 screen_fraction_to_reinforce = gate_pos_y/(upper_screen_limit_y + abs(lower_screen_limit_y)) # something between 0 and 1
                 index_to_reinforce = round(screen_fraction_to_reinforce*9)
                 gate_probas = gate_probas[index_to_reinforce]+0.1
-                gate probas = [proba/sum(gate_probas) for proba in gate_probas]         
+                gate_probas = [proba/sum(gate_probas) for proba in gate_probas]   
+                print "Gate probas = {}".format(gate_probas)
             else:
                 y_distance_to_gate = 0
                 print "Gate not found."
