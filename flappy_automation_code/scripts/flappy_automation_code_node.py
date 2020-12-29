@@ -11,32 +11,43 @@ from geometry_msgs.msg import Vector3
 # /flappy_vel for velocity vector
 # /flappy_laser_scan for sensor data            
 
+# constants
 EPSILON = 0.25
 KP_pos = .5 # proportional gain acceleration/distance_to_hole
 KP_vel = .5 # proportional gain velocity/reference velocity
+# global variables
 y_distance_to_hole = 0
+upper_screen_limit_y = None
+lower_screen_limit_y = None
+velocity_y = 0
 
-def getLowerScreenLimit(pointcloud_y,angles,intensities):
+def setLowerScreenLimit(pointcloud_y,angles,intensities):
     "Detects lower screen limit"
-    lower_screen_limit_y = None
     if intensities[0]: # there is an lower screen limit or a vertical wall
         if pointcloud_y[0] == pointcloud_y[1]: # lower screen limit
+            global lower_screen_limit_y
             # discard the 1th element as well
             lower_screen_limit_y = pointcloud_y[0]
+            return True
         elif not intensities[1]: # the hole is at the second ray location
             print "Hole at second lowest laser ray detected"
-    return lower_screen_limit_y
-
-def getUpperScreenLimit(pointcloud_y,angles,intensities):
+            return False
+        else:
+            return False
+    
+def setUpperScreenLimit(pointcloud_y,angles,intensities):
     "Detects upper screen limit"
-    upper_screen_limit_y = None
     if intensities[-1]: # there is an upper screen limit or a rock
         if pointcloud_y[-1] == pointcloud_y[-2]: # upper screen limit
+            global upper_screen_limit_y
             # discard the -2th element as well
             upper_screen_limit_y = pointcloud_y[-1]
+            return True
         elif not intensities[-2]: # the hole is at the second ray location
             print "Hole at second highest laser ray detected"
-    return upper_screen_limit_y
+            return False
+        else:
+            return False
     
 def getRocksPosition(pointcloud_x, range_min, range_max):
     """ Returns the coordinates of the rock wall if there is one, returns None otherwise.
@@ -129,12 +140,13 @@ def velCallback(msg):
 
     ### Velocity controller 
     # sensors signal
-    x_velocity = msg.x
-    y_velocity = msg.y
+    global velocity_y
+    velocity_x = msg.x
+    velocity_y = msg.y
 
     # errors
     #err_vel_x = 
-    err_vel_y = ref_vel_y - y_velocity
+    err_vel_y = ref_vel_y - velocity_y
 
     y_acceleration = KP_vel*err_vel_y
 
@@ -168,6 +180,7 @@ def laserScanCallback(msg):
 
     angles = msg.angle_min + np.multiply(np.arange(start=0,stop=9,dtype=int),msg.angle_increment)
     angles_deg = np.round(angles * 180/math.pi,2)
+    
         # print "Laser range: {}, angle: {}".format(msg.ranges[k], angles[k]) # this works
     # compute points positions realtive to flappy bird:
     pointcloud_x = np.round(np.multiply(msg.ranges,np.cos(angles)),2) # precise to 1 pixel
@@ -175,29 +188,27 @@ def laserScanCallback(msg):
     
     for k in range(len(msg.ranges)-1,-1,-1): # there a 9 lasers
         print "Point at {}°: x = {}, y = {}, intensity = {}".format(angles_deg[k], pointcloud_x[k], pointcloud_y[k], msg.intensities[k])
-    #[np.where(walls_x == element)[0].tolist() for element in np.unique(walls_x)]
-
-#==============================================================================
-#     spring_force = np.zeros_like(msg.ranges)                      
-#     for k in range(len(msg.ranges)):
-#         spring_force[k] = 2*msg.ranges[k]*np.sin(angles[k])
-#     total_spring_force = np.sum(spring_force)    
-#     pub_acc_cmd.publish(Vector3(0,total_spring_force,0))
-#==============================================================================
-#==============================================================================
-#     if getUpperScreenLimit(pointcloud_y, angles, msg.intensities): # safe guard from upper screen limit
-#         upper_screen_limit_y = getUpperScreenLimit(pointcloud_y, angles, msg.intensities)
-#         print "Upper screen limit detected at {}m".format(upper_screen_limit_y)
-#         if abs(upper_screen_limit_y) < 2*EPSILON:
-#             pub_acc_cmd.publish(Vector3(0,-35,0))
-#             pub_acc_cmd.publish(Vector3(0,+35,0))
-#     elif getLowerScreenLimit(pointcloud_y, angles, msg.intensities): # safe guard from lower screen limit
-#         lower_screen_limit_y = getLowerScreenLimit(pointcloud_y, angles, msg.intensities)
-#         print "Lower screen limit detected at {}m".format(lower_screen_limit_y)
-#         if abs(lower_screen_limit_y) < 2*EPSILON:
-#             pub_acc_cmd.publish(Vector3(0,+35,0))
-#             pub_acc_cmd.publish(Vector3(0,-35,0))
-#==============================================================================
+ 
+    if setUpperScreenLimit(pointcloud_y, angles, msg.intensities):
+        print "Upper screen limit detected at {}m".format(upper_screen_limit_y)
+    elif upper_screen_limit_y: # update position based on velocity
+        global upper_screen_limit_y
+        upper_screen_limit_y -= velocity_y/30 # frequency is 30Hz
+        print "Y-velocity : {}".format(velocity_y)
+        print "Upper screen limit at {}m".format(upper_screen_limit_y)
+    else:
+        print "Still first iteration ..."
+        
+    if setLowerScreenLimit(pointcloud_y, angles, msg.intensities):
+        print "Lower screen limit detected at {}m".format(lower_screen_limit_y)
+    elif lower_screen_limit_y: # update position based on velocity
+        global lower_screen_limit_y 
+        lower_screen_limit_y -= velocity_y/30
+        print "Y-velocity : {}".format(velocity_y)
+        print "Lower screen limit at {}m".format(lower_screen_limit_y)
+    else:
+        print "Still first iteration ..."
+        
     if getRocksPosition(pointcloud_x, msg.range_min, msg.range_max): # rock wall
         rocks_x = getRocksPosition(pointcloud_x, msg.range_min, msg.range_max)
         print "Rock wall detected at {}m".format(round(rocks_x,2))
