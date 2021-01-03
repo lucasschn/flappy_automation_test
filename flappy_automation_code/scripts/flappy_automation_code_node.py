@@ -12,7 +12,7 @@ from geometry_msgs.msg import Vector3
 # /flappy_laser_scan for sensor data            
 
 # constants
-EPSILON = 0.25
+GOING_THROUGH_SAFE_DISTANCE = 0.25
 SCAN_DISTANCE = 2
 SCAN_VELOCITY = 0.3
 APPROACH_VELOCITY = 0.8
@@ -23,7 +23,7 @@ KP_vel = 1 # proportional gain velocity/reference velocity
 
 # global variables
 state = 'approach'
-y_distance_to_gate = 0
+distance_to_gate_y = 0
 gate_width = None
 upper_screen_limit_y = None
 lower_screen_limit_y = None
@@ -34,89 +34,76 @@ pos_y = None
 gate_probas = np.array([0.1]*10) # probability of gate being in one tenth fraction of screen height (from low to high)
 
 def setLowerScreenLimit(pointcloud_y,angles,intensities):
-    "Detects lower screen limit"
-    if intensities[0]: # there is an lower screen limit or a vertical wall
+    """ Returns True if a lower screen limit has been detected by the lasers, False elsewise.
+        If the screen limit has been detected, also updates the value of the global variables lower_screen_limit_y with the distance of the screen limit with respect to the bird."""
+        
+    if intensities[0]: # there is either an lower screen limit or a rock
         if pointcloud_y[0] == pointcloud_y[1] and pointcloud_y[1] == pointcloud_y[2]: # lower screen limit detected
             global lower_screen_limit_y
             # discard the 1th element as well
             lower_screen_limit_y = pointcloud_y[0]
             return True
-#==============================================================================
-#         elif not intensities[1]: # the hole is at the second ray location
-#             print "Hole at second lowest laser ray detected"
-#             return False
-#==============================================================================
         else:
             return False
     
 def setUpperScreenLimit(pointcloud_y,angles,intensities):
-    "Detects upper screen limit"
-    if intensities[-1]: # there is an upper screen limit or a rock
-        if pointcloud_y[-1] == pointcloud_y[-2] and pointcloud_y[-2] == pointcloud_y[-3]: # upper screen limit
+    """ Returns True if an upper screen limit has been detected by the lasers, False elsewise.
+        If the screen limit has been detected, also updates the value of the global variables upper_screen_limit_y with the distance of the screen limit with respect to the bird."""
+    if intensities[-1]: # there is either an upper screen limit or a rock
+        if pointcloud_y[-1] == pointcloud_y[-2] and pointcloud_y[-2] == pointcloud_y[-3]: # upper screen limit detected
             global upper_screen_limit_y
             # discard the -2th element as well
             upper_screen_limit_y = pointcloud_y[-1]
             return True
-#==============================================================================
-#         elif not intensities[-2]: # the hole is at the second ray location
-#             print "Hole at second highest laser ray detected"
-#             return False
-#==============================================================================
         else:
             return False
     
 def getRocksPosition(pointcloud_x, range_min, range_max):
     """ Returns the coordinates of the rock wall if there is one, returns None otherwise.
-        Considers the presence of a wall if there are at least 3 points falling in the same 0.2m bin."""
+        Horizontal range of lasers is divided in bins of 0.3m. Defines the presence of a rock wall as at least 3 laser points falling in the same bin."""
         
     bin_edges = np.linspace(range_min,range_max,round((range_max-range_min)/0.3))
     distr,_ = np.histogram(pointcloud_x, bins = bin_edges)
     rocks_position = None
     possible_rocks_positions = []
     for bin_index in range(len(bin_edges)-1):  
-        if distr[bin_index] >= 3:
+        if distr[bin_index] >= 3: # if there are 3 rocks in the same bin
             possible_rocks_positions.append((bin_edges[bin_index] + bin_edges[bin_index+1])/2)
     if len(possible_rocks_positions) > 0:
-        rocks_position = np.min(possible_rocks_positions)        
+        rocks_position = np.min(possible_rocks_positions) # if several rock walls detected, we are interested in the closest one    
     return rocks_position
 
 def setGatePosition(pointcloud_x, angles, rocks_x):
-    is_going_through = (pointcloud_x - rocks_x) > EPSILON
-    #print "Laser rays going through {}".format(is_going_through)
-    
-#==============================================================================
-#     if np.sum(is_going_through) == 1: # there is one hole, with single laser going through
-#         global y_distance_to_gate, gate_width
-#         y_distance_to_gate = rocks_x * math.tan(angles[is_going_through])
-#         print "Gate is at laser ray {}".format(np.where(is_going_through))
-#         gate_width = 1
-#         return True
-#==============================================================================
-
+    """ Returns True if the gate through the rock wall has been found, returns False elsewise.
+        A gate is detected when there is one unique hole where several consecutive laser rays are going through."""
+    is_going_through = (pointcloud_x - rocks_x) > GOING_THROUGH_SAFE_DISTANCE # laser ray going through the rock wall is defined as the laser point x-coordinate being significantly behind the rock wall.
+    # we only compute the length of the hole when there are several rays going through
     if np.sum(is_going_through) > 1: # there might be one big or multiple holes
         holes_lengths, indices_holes_start = getHolesLength(is_going_through) # if hole_length >1, it's a gate!
-        if np.max(holes_lengths) > 1: # if there is at least one big hole
-            global y_distance_to_gate, gate_width
+        if np.max(holes_lengths) > 1: # if there is at least one big hole, we will detect a gate
+        # now there are two cases, either there is only one big hole or there a multiple ones (big or small)
             if len(indices_holes_start) > 1: # if there are multiple holes
                 index_gate_start = indices_holes_start[holes_lengths > 1]   
-                if isinstance(index_gate_start, np.ndarray):
-                    if len(index_gate_start)!=1:
-                        print "Index gate start: {}, type {}".format(index_gate_start, type(index_gate_start))
-                        raise ValueError('Several holes have been gone through by more than one ray. Gate detection algorithm is invalid.')
-                print "Gate starts at laser ray {}".format(index_gate_start)
+                if isinstance(index_gate_start, np.ndarray) and len(index_gate_start)!=1: # if there are multiple holes with length > 1
+                        # Several holes have been gone through by more than one ray. The gate position cannot be determined
+                        return False
                 index_gate_stop = indices_holes_start[holes_lengths > 1] + holes_lengths[holes_lengths > 1] - 1 # a hole of length 1 starts and finishes at the same index
-                middle_angle = (angles[index_gate_start] + angles[index_gate_stop])/2
-                y_distance_to_gate = rocks_x + math.tan(middle_angle)
+                global gate_width                
                 gate_width = holes_lengths[holes_lengths > 1]
+                
             else: # there is only one big hole
                 index_gate_start = indices_holes_start
                 print "Gate starts at laser ray {}".format(indices_holes_start)
                 index_gate_stop = indices_holes_start + holes_lengths - 1 # a hole of length 1 starts and finishes at the same index
-                avg_angle = (angles[index_gate_start] + angles[index_gate_stop])/2 # middle point
-                y_distance_to_gate = rocks_x * math.tan(avg_angle)
+                global gate_width
                 gate_width = holes_lengths
-                return True
-    return False
+                
+            avg_angle = (angles[index_gate_start] + angles[index_gate_stop])/2 # the gate position is the vertical distance between its middle point and the bird
+            global distance_to_gate_y                
+            distance_to_gate_y = rocks_x * math.tan(avg_angle) # distance_to_gate_x is equivalent to rocks_x (and not to pointcloud_x)
+            return True
+    else:
+        return False
 
 def getHolesLength(is_going_through):
     is_going_through_diff = np.diff(np.concatenate([[False], is_going_through]).astype('int')) # concatenating a False value at first to make appear a hole start at next line if first value of is_going_through is True
@@ -169,7 +156,7 @@ def velCallback(msg):
     # msg has the format of geometry_msgs::Vector3
 
     ### Position controller
-    # reference is 0 distance to hole, so err_pos_y = y_distance_to_gate
+    # reference is 0 distance to hole, so err_pos_y = distance_to_gate_y
     if state=='approach':
         ref_vel_x = APPROACH_VELOCITY
         ref_vel_y = 0.0
@@ -180,11 +167,11 @@ def velCallback(msg):
         ref_vel_x = 0.0
         ref_vel_y = SCAN_VELOCITY
     elif state=='go through': # then set a reference y-position
-        if abs(y_distance_to_gate) <= 0.1 and abs(vel_y) < 0.01: 
+        if abs(distance_to_gate_y) <= 0.1 and abs(vel_y) < 0.01: 
             ref_vel_x = GOING_THROUGH_VELOCITY # literally go through
         else:
             ref_vel_x = 0.0 # wait for adjusting vertical position
-        ref_pos_y = y_distance_to_gate
+        ref_pos_y = distance_to_gate_y
         # output of the position controller is the velocity reference
         ref_vel_y = KP_pos*ref_pos_y # if no hole is detected, y_distance is 0 and ref_vel_y = 0
 
@@ -201,7 +188,7 @@ def velCallback(msg):
     acc_x = KP_vel*err_vel_x
     acc_y = KP_vel*err_vel_y
 
-    #print "Controller: pos. err. = y: {}".format(y_distance_to_gate)
+    #print "Controller: pos. err. = y: {}".format(distance_to_gate_y)
     #print "Controller: vel. err. = x: {}, y: {}".format(err_vel_x, err_vel_y)
     #print "Controller: Acceleration = x: {}, y: {}".format(acc_x, acc_y)
     
@@ -275,9 +262,9 @@ def laserScanCallback(msg):
              evaluateYPosition()
         
         if setGatePosition(pointcloud_x, angles, rocks_x) and lower_screen_limit_y is not None and upper_screen_limit_y is not None:
-            print "Gate detected at {}m above (width {})".format(y_distance_to_gate, gate_width) 
+            print "Gate detected at {}m above (width {})".format(distance_to_gate_y, gate_width) 
             if pos_y is not None:
-                likely_gate_pos_y = y_distance_to_gate + pos_y
+                likely_gate_pos_y = distance_to_gate_y + pos_y
                 screen_height = upper_screen_limit_y + abs(lower_screen_limit_y)
                 screen_fraction_to_reinforce = likely_gate_pos_y/screen_height # something between 0 and 1
                 index_to_reinforce = int(round(screen_fraction_to_reinforce*9))
@@ -313,13 +300,19 @@ def laserScanCallback(msg):
     elif state == 'go through':
         global rocks_x
         rocks_x -= vel_x/30
-        global y_distance_to_gate
-        y_distance_to_gate -= vel_y/30
+        global distance_to_gate_y
+        distance_to_gate_y -= vel_y/30
+        # corrections of gate position if needed
+        if abs(pointcloud_y[0]) < 0.1:
+            distance_to_gate_y += 0.1
+        elif pointcloud_y[-1] < 0.1:
+            distance_to_gate_y -= 0.1
         if rocks_x < -.5:
             global state, upper_screen_limit_y, lower_screen_limit_y, gate_probas
             state = 'approach'
             upper_screen_limit_y = None
             lower_screen_limit_y = None
+            pos_y = None
             gate_probas = np.array([0.1]*9)
         
     else:
